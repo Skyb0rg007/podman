@@ -64,6 +64,14 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 			if err != nil {
 				return nil, err
 			}
+		case ".force_mask", "vfs.force_mask":
+			logrus.Debugf("vfs: force_mask=%s", val)
+			mask, err := strconv.ParseUint(val, 8, 32)
+			if err != nil {
+				return nil, err
+			}
+			m := os.FileMode(mask)
+			d.forceMask = &m
 		default:
 			return nil, fmt.Errorf("vfs driver does not support %s options", key)
 		}
@@ -84,6 +92,7 @@ type Driver struct {
 	home              string
 	additionalHomes   []string
 	ignoreChownErrors bool
+	forceMask         *os.FileMode
 	naiveDiff         graphdriver.DiffDriver
 	updater           graphdriver.LayerIDMapUpdater
 	imageStore        string
@@ -136,6 +145,9 @@ func (d *Driver) ApplyDiff(id string, options graphdriver.ApplyDiffOpts) (size i
 	if d.ignoreChownErrors {
 		options.IgnoreChownErrors = d.ignoreChownErrors
 	}
+	if d.forceMask != nil {
+		options.ForceMask = d.forceMask
+	}
 	return d.naiveDiff.ApplyDiff(id, options)
 }
 
@@ -184,19 +196,49 @@ func (d *Driver) create(id, parent string, opts *graphdriver.CreateOpts, ro bool
 		rootPerms = os.FileMode(0o700)
 	}
 
+	// Store the original ownership info for xattr if force_mask is set
+	var origStat idtools.Stat
 	idPair := idtools.IDPair{UID: rootUID, GID: rootGID}
+
 	if parent != "" {
-		st, err := system.Stat(d.dir(parent))
-		if err != nil {
-			return err
+		parentDir := d.dir(parent)
+		// Try to get the original ownership from xattr first (if parent was also stored with force_mask)
+		if xSt, err := idtools.GetContainersOverrideXattr(parentDir); err == nil {
+			origStat = xSt
+		} else {
+			st, err := system.Stat(parentDir)
+			if err != nil {
+				return err
+			}
+			rootPerms = os.FileMode(st.Mode())
+			origStat.IDs.UID = int(st.UID())
+			origStat.IDs.GID = int(st.GID())
+			origStat.Mode = os.FileMode(st.Mode())
+			idPair.UID = int(st.UID())
+			idPair.GID = int(st.GID())
 		}
-		rootPerms = os.FileMode(st.Mode())
-		idPair.UID = int(st.UID())
-		idPair.GID = int(st.GID())
 	}
-	if err := idtools.MkdirAllAndChownNew(dir, rootPerms, idPair); err != nil {
+
+	// When force_mask is set, use the forced permissions and current user's UID/GID
+	forcedSt := origStat
+	if d.forceMask != nil {
+		forcedSt.IDs = idPair
+		forcedSt.Mode = *d.forceMask
+		rootPerms = *d.forceMask
+	}
+
+	if err := idtools.MkdirAllAndChownNew(dir, rootPerms, forcedSt.IDs); err != nil {
 		return err
 	}
+
+	// Store original ownership in xattr when force_mask is set
+	if d.forceMask != nil {
+		origStat.Mode |= os.ModeDir
+		if err := idtools.SetContainersOverrideXattr(dir, origStat); err != nil {
+			return err
+		}
+	}
+
 	labelOpts := []string{"level:s0"}
 	if _, mountLabel, err := label.InitLabels(labelOpts); err == nil {
 		if err := label.SetFileLabel(dir, mountLabel); err != nil {

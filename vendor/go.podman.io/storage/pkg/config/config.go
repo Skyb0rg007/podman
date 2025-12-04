@@ -37,6 +37,10 @@ type VfsOptionsConfig struct {
 	// IgnoreChownErrors is a flag for whether chown errors should be
 	// ignored when building an image.
 	IgnoreChownErrors string `toml:"ignore_chown_errors,omitempty"`
+	// ForceMask indicates the permissions mask (e.g. "0755") to use for new
+	// files and directories. When set, files are stored with this mask and
+	// the user's single UID/GID, with original ownership stored in xattrs.
+	ForceMask string `toml:"force_mask,omitempty"`
 }
 
 type ZfsOptionsConfig struct {
@@ -182,6 +186,11 @@ func GetGraphDriverOptions(driverName string, options OptionsConfig) []string {
 			doptions = append(doptions, fmt.Sprintf("%s.ignore_chown_errors=%s", driverName, options.Vfs.IgnoreChownErrors))
 		} else if options.IgnoreChownErrors != "" {
 			doptions = append(doptions, fmt.Sprintf("%s.ignore_chown_errors=%s", driverName, options.IgnoreChownErrors))
+		}
+		if options.Vfs.ForceMask != "" {
+			doptions = append(doptions, fmt.Sprintf("%s.force_mask=%s", driverName, options.Vfs.ForceMask))
+		} else if options.ForceMask != 0 {
+			doptions = append(doptions, fmt.Sprintf("%s.force_mask=%s", driverName, options.ForceMask))
 		}
 
 	case "zfs":
