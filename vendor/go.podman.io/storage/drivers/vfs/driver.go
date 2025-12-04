@@ -66,9 +66,17 @@ func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) 
 			}
 		case ".force_mask", "vfs.force_mask":
 			logrus.Debugf("vfs: force_mask=%s", val)
-			mask, err := strconv.ParseUint(val, 8, 32)
-			if err != nil {
-				return nil, err
+			var mask int64
+			switch val {
+			case "shared":
+				mask = 0o755
+			case "private":
+				mask = 0o700
+			default:
+				mask, err = strconv.ParseInt(val, 8, 32)
+				if err != nil {
+					return nil, err
+				}
 			}
 			m := os.FileMode(mask)
 			d.forceMask = &m
